@@ -2,10 +2,20 @@ use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
     token::{self, Mint, Token, TokenAccount, Transfer},
+    token_interface::{
+        transfer_checked, Mint as MintInterface, TokenAccount as TokenAccountInterface,
+        TokenInterface, TransferChecked,
+    },
 };
 
+#[path = "util_token22.rs"]
+mod util_token22;
+use util_token22::gross_up_for_fee;
+
 use crate::{
-    amm, calculate_fee, state::{BondingCurve, Global}, CompleteEvent, CurveLaunchpadError, TradeEvent
+    amm, calculate_fee,
+    state::{BondingCurve, Global},
+    CompleteEvent, CurveLaunchpadError, TradeEvent,
 };
 
 #[event_cpi]
@@ -28,7 +38,7 @@ pub struct Buy<'info> {
     #[account(
         address = global.quote_mint @ CurveLaunchpadError::InvalidQuoteMint,
     )]
-    quote_mint: Box<Account<'info, Mint>>,
+    quote_mint: Box<InterfaceAccount<'info, MintInterface>>,
 
     #[account(
         mut,
@@ -49,8 +59,9 @@ pub struct Buy<'info> {
         payer = user,
         associated_token::mint = quote_mint,
         associated_token::authority = bonding_curve,
+        associated_token::token_program = quote_token_program,
     )]
-    bonding_curve_quote_account: Box<Account<'info, TokenAccount>>,
+    bonding_curve_quote_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
 
     #[account(
         mut,
@@ -63,20 +74,24 @@ pub struct Buy<'info> {
         mut,
         associated_token::mint = quote_mint,
         associated_token::authority = user,
+        associated_token::token_program = quote_token_program,
     )]
-    user_quote_account: Box<Account<'info, TokenAccount>>,
+    user_quote_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
 
     #[account(
         init_if_needed,
         payer = user,
         associated_token::mint = quote_mint,
         associated_token::authority = fee_recipient,
+        associated_token::token_program = quote_token_program,
     )]
-    fee_recipient_quote_account: Box<Account<'info, TokenAccount>>,
+    fee_recipient_quote_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
 
     system_program: Program<'info, System>,
 
     token_program: Program<'info, Token>,
+
+    quote_token_program: Interface<'info, TokenInterface>,
 
     associated_token_program: Program<'info, AssociatedToken>,
 }
@@ -121,41 +136,67 @@ pub fn buy(ctx: Context<Buy>, token_amount: u64, max_quote_cost: u64) -> Result<
     let buy_result = amm.apply_buy(target_token_amount as u128).unwrap();
     let fee = calculate_fee(buy_result.quote_amount, ctx.accounts.global.fee_basis_points);
     let buy_amount_with_fee = buy_result.quote_amount + fee;
-    msg!("buy_amount_with_fee: {}, max_quote_cost: {}", buy_amount_with_fee, max_quote_cost);
+    msg!(
+        "buy_amount_with_fee: {}, max_quote_cost: {}",
+        buy_amount_with_fee,
+        max_quote_cost
+    );
 
     require!(
         buy_amount_with_fee <= max_quote_cost,
         CurveLaunchpadError::MaxQuoteCostExceeded,
     );
 
+    // Compute gross-up amounts so the curve and fee recipient NET exactly
+    // `quote_amount` and `fee` respectively after the TransferFee extension
+    // is deducted. For legacy Token v1 mints these collapse to the same value.
+    let gross_to_curve =
+        gross_up_for_fee(&ctx.accounts.quote_mint.to_account_info(), buy_result.quote_amount)?;
+    let gross_to_fee = gross_up_for_fee(&ctx.accounts.quote_mint.to_account_info(), fee)?;
+    let total_user_debit = gross_to_curve
+        .checked_add(gross_to_fee)
+        .ok_or(error!(CurveLaunchpadError::InsufficientQuote))?;
+
     require!(
-        ctx.accounts.user_quote_account.amount >= buy_amount_with_fee,
+        ctx.accounts.user_quote_account.amount >= total_user_debit,
         CurveLaunchpadError::InsufficientQuote,
     );
 
-    // transfer LST quote → bonding curve quote ATA
-    let quote_to_curve = Transfer {
+    let quote_decimals = ctx.accounts.quote_mint.decimals;
+
+    // transfer LST quote → bonding curve quote ATA (gross-up so net == quote_amount)
+    let quote_to_curve = TransferChecked {
         from: ctx.accounts.user_quote_account.to_account_info(),
+        mint: ctx.accounts.quote_mint.to_account_info(),
         to: ctx.accounts.bonding_curve_quote_account.to_account_info(),
         authority: ctx.accounts.user.to_account_info(),
     };
-    token::transfer(
-        CpiContext::new(ctx.accounts.token_program.to_account_info(), quote_to_curve),
-        buy_result.quote_amount,
+    transfer_checked(
+        CpiContext::new(
+            ctx.accounts.quote_token_program.to_account_info(),
+            quote_to_curve,
+        ),
+        gross_to_curve,
+        quote_decimals,
     )?;
 
-    // transfer LST fee → fee recipient ATA
-    let quote_to_fee_recipient = Transfer {
+    // transfer LST fee → fee recipient ATA (gross-up so net == fee)
+    let quote_to_fee_recipient = TransferChecked {
         from: ctx.accounts.user_quote_account.to_account_info(),
+        mint: ctx.accounts.quote_mint.to_account_info(),
         to: ctx.accounts.fee_recipient_quote_account.to_account_info(),
         authority: ctx.accounts.user.to_account_info(),
     };
-    token::transfer(
-        CpiContext::new(ctx.accounts.token_program.to_account_info(), quote_to_fee_recipient),
-        fee,
+    transfer_checked(
+        CpiContext::new(
+            ctx.accounts.quote_token_program.to_account_info(),
+            quote_to_fee_recipient,
+        ),
+        gross_to_fee,
+        quote_decimals,
     )?;
 
-    // transfer MEME bonding curve → user
+    // transfer MEME bonding curve → user (legacy Token v1, regular transfer)
     let meme_to_user = Transfer {
         from: ctx.accounts.bonding_curve_token_account.to_account_info(),
         to: ctx.accounts.user_token_account.to_account_info(),
