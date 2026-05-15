@@ -1,6 +1,8 @@
 [toolchain]
 anchor_version = "0.30.1"
-solana_version = "1.18.17"
+# Use whatever cargo-build-sbf is on PATH (currently solana 3.1.15 / Agave
+# stable). The previous pin to 1.18.17 forced anchor to switch toolchains
+# to a version that isn't installed on this machine and broke `anchor build`.
 
 [features]
 resolution = true

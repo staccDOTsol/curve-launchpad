@@ -8,6 +8,11 @@ pub mod state;
 
 declare_id!("Cpm3iVenngWyh3YQUXtjR1PudXBXfJJqLhxMGrDiVSkW");
 
+// Typed CPI bindings for Raydium CPMM, generated from the on-chain IDL at
+// `idls/raydium_cp_swap.json`. Used by `migrate` for pool init and (eventually)
+// by the post-mig flip drain path.
+declare_program!(raydium_cp_swap);
+
 #[program]
 pub mod curve_launchpad {
 
