@@ -13,14 +13,14 @@ pub struct CreateEvent {
 #[event]
 pub struct TradeEvent {
     pub mint: Pubkey,
-    pub sol_amount: u64,
+    pub quote_amount: u64,
     pub token_amount: u64,
     pub is_buy: bool,
     pub user: Pubkey,
     pub timestamp: i64,
-    pub virtual_sol_reserves: u64,
+    pub virtual_quote_reserves: u64,
     pub virtual_token_reserves: u64,
-    pub real_sol_reserves: u64,
+    pub real_quote_reserves: u64,
     pub real_token_reserves: u64,
 }
 
@@ -37,8 +37,9 @@ pub struct SetParamsEvent {
     pub fee_recipient: Pubkey,
     pub withdraw_authority: Pubkey,
     pub initial_virtual_token_reserves: u64,
-    pub initial_virtual_sol_reserves: u64,
+    pub initial_virtual_quote_reserves: u64,
     pub initial_real_token_reserves: u64,
     pub initial_token_supply: u64,
     pub fee_basis_points: u64,
+    pub quote_mint: Pubkey,
 }

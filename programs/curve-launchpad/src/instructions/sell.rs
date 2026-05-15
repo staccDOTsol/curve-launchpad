@@ -2,7 +2,10 @@ use crate::{
     amm, calculate_fee, state::{BondingCurve, Global}, CurveLaunchpadError, TradeEvent
 };
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{self, Mint, Token, TokenAccount, Transfer},
+};
 
 #[event_cpi]
 #[derive(Accounts)]
@@ -17,10 +20,14 @@ pub struct Sell<'info> {
     global: Box<Account<'info, Global>>,
 
     /// CHECK: Using global state to validate fee_recipient account
-    #[account(mut)]
     fee_recipient: AccountInfo<'info>,
 
     mint: Account<'info, Mint>,
+
+    #[account(
+        address = global.quote_mint @ CurveLaunchpadError::InvalidQuoteMint,
+    )]
+    quote_mint: Box<Account<'info, Mint>>,
 
     #[account(
         mut,
@@ -38,36 +45,57 @@ pub struct Sell<'info> {
 
     #[account(
         mut,
+        associated_token::mint = quote_mint,
+        associated_token::authority = bonding_curve,
+    )]
+    bonding_curve_quote_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
         associated_token::mint = mint,
         associated_token::authority = user,
     )]
     user_token_account: Box<Account<'info, TokenAccount>>,
 
+    #[account(
+        init_if_needed,
+        payer = user,
+        associated_token::mint = quote_mint,
+        associated_token::authority = user,
+    )]
+    user_quote_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = user,
+        associated_token::mint = quote_mint,
+        associated_token::authority = fee_recipient,
+    )]
+    fee_recipient_quote_account: Box<Account<'info, TokenAccount>>,
+
     system_program: Program<'info, System>,
 
     token_program: Program<'info, Token>,
+
+    associated_token_program: Program<'info, AssociatedToken>,
 }
 
-pub fn sell(ctx: Context<Sell>, token_amount: u64, min_sol_output: u64) -> Result<()> {
-    //check if bonding curve is complete
+pub fn sell(ctx: Context<Sell>, token_amount: u64, min_quote_output: u64) -> Result<()> {
     require!(
         !ctx.accounts.bonding_curve.complete,
         CurveLaunchpadError::BondingCurveComplete,
     );
 
-    //confirm user has enough tokens
     require!(
         ctx.accounts.user_token_account.amount >= token_amount,
         CurveLaunchpadError::InsufficientTokens,
     );
 
-    //invalid fee recipient
     require!(
         ctx.accounts.fee_recipient.key == &ctx.accounts.global.fee_recipient,
         CurveLaunchpadError::InvalidFeeRecipient,
     );
 
-    //confirm bonding curve has enough tokens
     require!(
         ctx.accounts.bonding_curve_token_account.amount >= token_amount,
         CurveLaunchpadError::InsufficientTokens,
@@ -76,74 +104,91 @@ pub fn sell(ctx: Context<Sell>, token_amount: u64, min_sol_output: u64) -> Resul
     require!(token_amount > 0, CurveLaunchpadError::MinSell,);
 
     let mut amm = amm::amm::AMM::new(
-        ctx.accounts.bonding_curve.virtual_sol_reserves as u128,
+        ctx.accounts.bonding_curve.virtual_quote_reserves as u128,
         ctx.accounts.bonding_curve.virtual_token_reserves as u128,
-        ctx.accounts.bonding_curve.real_sol_reserves as u128,
+        ctx.accounts.bonding_curve.real_quote_reserves as u128,
         ctx.accounts.bonding_curve.real_token_reserves as u128,
         ctx.accounts.global.initial_virtual_token_reserves as u128,
     );
 
     let sell_result = amm.apply_sell(token_amount as u128).unwrap();
-    let fee = calculate_fee(sell_result.sol_amount, ctx.accounts.global.fee_basis_points);
+    let fee = calculate_fee(sell_result.quote_amount, ctx.accounts.global.fee_basis_points);
 
-    //the fee is subtracted from the sol amount to confirm the user minimum sol output is met
-    let sell_amount_minus_fee = sell_result.sol_amount - fee;
+    let sell_amount_minus_fee = sell_result.quote_amount - fee;
 
-    //confirm min sol output is greater than sol output
     require!(
-        sell_amount_minus_fee >= min_sol_output,
-        CurveLaunchpadError::MinSOLOutputExceeded,
+        sell_amount_minus_fee >= min_quote_output,
+        CurveLaunchpadError::MinQuoteOutputExceeded,
     );
 
-    //transfer SPL
-    let cpi_accounts = Transfer {
-        from: ctx.accounts.user_token_account.to_account_info().clone(),
-        to: ctx
-            .accounts
-            .bonding_curve_token_account
-            .to_account_info()
-            .clone(),
-        authority: ctx.accounts.user.to_account_info().clone(),
-    };
+    require!(
+        ctx.accounts.bonding_curve_quote_account.amount >= sell_result.quote_amount,
+        CurveLaunchpadError::InsufficientQuote,
+    );
 
+    // transfer MEME from user → bonding curve
+    let meme_to_curve = Transfer {
+        from: ctx.accounts.user_token_account.to_account_info(),
+        to: ctx.accounts.bonding_curve_token_account.to_account_info(),
+        authority: ctx.accounts.user.to_account_info(),
+    };
     token::transfer(
-        CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            cpi_accounts,
-            &[],
-        ),
+        CpiContext::new(ctx.accounts.token_program.to_account_info(), meme_to_curve),
         sell_result.token_amount,
     )?;
 
-    //transfer SOL back to user
-    //TODO: check if this is correct
-    let from_account = &ctx.accounts.bonding_curve;
-    let to_account = &ctx.accounts.user;
+    let signer: [&[&[u8]]; 1] = [&[
+        BondingCurve::SEED_PREFIX,
+        ctx.accounts.mint.to_account_info().key.as_ref(),
+        &[ctx.bumps.bonding_curve],
+    ]];
 
-    **from_account.to_account_info().try_borrow_mut_lamports()? -= sell_result.sol_amount;
-    **to_account.try_borrow_mut_lamports()? += sell_result.sol_amount;
+    // transfer LST from bonding curve → user
+    let quote_to_user = Transfer {
+        from: ctx.accounts.bonding_curve_quote_account.to_account_info(),
+        to: ctx.accounts.user_quote_account.to_account_info(),
+        authority: ctx.accounts.bonding_curve.to_account_info(),
+    };
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            quote_to_user,
+            &signer,
+        ),
+        sell_amount_minus_fee,
+    )?;
 
-    //transfer fee to fee recipient
-    **from_account.to_account_info().try_borrow_mut_lamports()? -= fee;
-    **ctx.accounts.fee_recipient.try_borrow_mut_lamports()? += fee;
-
+    // transfer LST fee from bonding curve → fee recipient
+    let quote_to_fee_recipient = Transfer {
+        from: ctx.accounts.bonding_curve_quote_account.to_account_info(),
+        to: ctx.accounts.fee_recipient_quote_account.to_account_info(),
+        authority: ctx.accounts.bonding_curve.to_account_info(),
+    };
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            quote_to_fee_recipient,
+            &signer,
+        ),
+        fee,
+    )?;
 
     let bonding_curve = &mut ctx.accounts.bonding_curve;
     bonding_curve.real_token_reserves = amm.real_token_reserves as u64;
-    bonding_curve.real_sol_reserves = amm.real_sol_reserves as u64;
+    bonding_curve.real_quote_reserves = amm.real_quote_reserves as u64;
     bonding_curve.virtual_token_reserves = amm.virtual_token_reserves as u64;
-    bonding_curve.virtual_sol_reserves = amm.virtual_sol_reserves as u64;
+    bonding_curve.virtual_quote_reserves = amm.virtual_quote_reserves as u64;
 
     emit_cpi!(TradeEvent {
         mint: *ctx.accounts.mint.to_account_info().key,
-        sol_amount: sell_result.sol_amount,
+        quote_amount: sell_result.quote_amount,
         token_amount: sell_result.token_amount,
         is_buy: false,
         user: *ctx.accounts.user.to_account_info().key,
         timestamp: Clock::get()?.unix_timestamp,
-        virtual_sol_reserves: bonding_curve.virtual_sol_reserves,
+        virtual_quote_reserves: bonding_curve.virtual_quote_reserves,
         virtual_token_reserves: bonding_curve.virtual_token_reserves,
-        real_sol_reserves: bonding_curve.real_sol_reserves,
+        real_quote_reserves: bonding_curve.real_quote_reserves,
         real_token_reserves: bonding_curve.real_token_reserves,
     });
 

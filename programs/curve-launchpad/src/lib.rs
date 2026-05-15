@@ -21,12 +21,12 @@ pub mod curve_launchpad {
         create::create(ctx, name, symbol, uri)
     }
 
-    pub fn buy(ctx: Context<Buy>, token_amount: u64, max_sol_cost: u64) -> Result<()> {
-        buy::buy(ctx, token_amount, max_sol_cost)
+    pub fn buy(ctx: Context<Buy>, token_amount: u64, max_quote_cost: u64) -> Result<()> {
+        buy::buy(ctx, token_amount, max_quote_cost)
     }
 
-    pub fn sell(ctx: Context<Sell>, token_amount: u64, min_sol_output: u64) -> Result<()> {
-        sell::sell(ctx, token_amount, min_sol_output)
+    pub fn sell(ctx: Context<Sell>, token_amount: u64, min_quote_output: u64) -> Result<()> {
+        sell::sell(ctx, token_amount, min_quote_output)
     }
 
     pub fn withdraw(ctx: Context<Withdraw>) -> Result<()> {
@@ -42,20 +42,22 @@ pub mod curve_launchpad {
         fee_recipient: Pubkey,
         withdraw_authority: Pubkey,
         initial_virtual_token_reserves: u64,
-        initial_virtual_sol_reserves: u64,
+        initial_virtual_quote_reserves: u64,
         initial_real_token_reserves: u64,
-        inital_token_supply: u64,
+        initial_token_supply: u64,
         fee_basis_points: u64,
+        quote_mint: Pubkey,
     ) -> Result<()> {
         set_params::set_params(
             ctx,
             fee_recipient,
             withdraw_authority,
             initial_virtual_token_reserves,
-            initial_virtual_sol_reserves,
+            initial_virtual_quote_reserves,
             initial_real_token_reserves,
-            inital_token_supply,
+            initial_token_supply,
             fee_basis_points,
+            quote_mint,
         )
     }
 }

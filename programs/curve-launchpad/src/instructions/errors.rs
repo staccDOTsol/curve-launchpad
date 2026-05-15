@@ -15,12 +15,12 @@ pub enum CurveLaunchpadError {
     BondingCurveNotComplete,
     #[msg("Insufficient Tokens")]
     InsufficientTokens,
-    #[msg("Insufficient SOL")]
-    InsufficientSOL,
-    #[msg("Max SOL Cost Exceeded")]
-    MaxSOLCostExceeded,
-    #[msg("Min SOL Output Exceeded")]
-    MinSOLOutputExceeded,
+    #[msg("Insufficient Quote")]
+    InsufficientQuote,
+    #[msg("Max Quote Cost Exceeded")]
+    MaxQuoteCostExceeded,
+    #[msg("Min Quote Output Exceeded")]
+    MinQuoteOutputExceeded,
     #[msg("Min buy is 1 Token")]
     MinBuy,
     #[msg("Min sell is 1 Token")]
@@ -29,4 +29,6 @@ pub enum CurveLaunchpadError {
     InvalidFeeRecipient,
     #[msg("Invalid Withdraw Authority")]
     InvalidWithdrawAuthority,
+    #[msg("Invalid Quote Mint")]
+    InvalidQuoteMint,
 }

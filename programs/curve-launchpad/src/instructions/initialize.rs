@@ -1,4 +1,4 @@
-use crate::{state::Global, CurveLaunchpadError, DEFAULT_TOKEN_SUPPLY};
+use crate::{state::Global, CurveLaunchpadError, DEFAULT_TOKEN_SUPPLY, STACC_QUOTE_MINT};
 use anchor_lang::prelude::*;
 
 
@@ -31,11 +31,12 @@ pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
     global.authority = *ctx.accounts.authority.to_account_info().key;
     global.initialized = true;
     global.initial_token_supply = DEFAULT_TOKEN_SUPPLY;
-    global.initial_real_sol_reserves = 0;
+    global.initial_real_quote_reserves = 0;
     global.initial_real_token_reserves = DEFAULT_TOKEN_SUPPLY;
-    global.initial_virtual_sol_reserves = 30_000_000_000;
+    global.initial_virtual_quote_reserves = 30_000_000_000;
     global.initial_virtual_token_reserves = 1_073_000_000_000_000;
     global.fee_basis_points = 50;
+    global.quote_mint = STACC_QUOTE_MINT;
 
     msg!("Initialized global state");
 

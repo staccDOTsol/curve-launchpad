@@ -62,8 +62,8 @@ pub struct Create<'info> {
     #[account(
         mut,
         seeds = [
-            b"metadata", 
-            token_metadata_program.key.as_ref(), 
+            b"metadata",
+            token_metadata_program.key.as_ref(),
             mint.to_account_info().key.as_ref()
         ],
         seeds::program = token_metadata_program.key(),
@@ -84,7 +84,6 @@ pub struct Create<'info> {
 
 
 pub fn create(ctx: Context<Create>, name: String, symbol: String, uri: String) -> Result<()> {
-    //confirm program is initialized
     require!(
         ctx.accounts.global.initialized,
         CurveLaunchpadError::NotInitialized
@@ -135,8 +134,8 @@ pub fn create(ctx: Context<Create>, name: String, symbol: String, uri: String) -
         ctx.accounts.global.initial_token_supply,
     )?;
 
-    //remove mint_authority
-    let cpi_context = CpiContext::new_with_signer(
+    //revoke freeze authority — non-rugability invariant for the launchpad
+    let revoke_freeze_ctx = CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
         token::SetAuthority {
             current_authority: ctx.accounts.mint_authority.to_account_info(),
@@ -144,12 +143,23 @@ pub fn create(ctx: Context<Create>, name: String, symbol: String, uri: String) -
         },
         &signer,
     );
-    token::set_authority(cpi_context, AuthorityType::MintTokens, None)?;
+    token::set_authority(revoke_freeze_ctx, AuthorityType::FreezeAccount, None)?;
+
+    //remove mint_authority
+    let revoke_mint_ctx = CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        token::SetAuthority {
+            current_authority: ctx.accounts.mint_authority.to_account_info(),
+            account_or_mint: ctx.accounts.mint.to_account_info(),
+        },
+        &signer,
+    );
+    token::set_authority(revoke_mint_ctx, AuthorityType::MintTokens, None)?;
 
     let bonding_curve = &mut ctx.accounts.bonding_curve;
-    bonding_curve.virtual_sol_reserves = ctx.accounts.global.initial_virtual_sol_reserves;
+    bonding_curve.virtual_quote_reserves = ctx.accounts.global.initial_virtual_quote_reserves;
     bonding_curve.virtual_token_reserves = ctx.accounts.global.initial_virtual_token_reserves;
-    bonding_curve.real_sol_reserves = 0;
+    bonding_curve.real_quote_reserves = 0;
     bonding_curve.real_token_reserves = ctx.accounts.global.initial_real_token_reserves;
     bonding_curve.token_total_supply = ctx.accounts.global.initial_token_supply;
     bonding_curve.complete = false;

@@ -23,6 +23,11 @@ pub struct Withdraw<'info> {
     mint: Account<'info, Mint>,
 
     #[account(
+        address = global.quote_mint @ CurveLaunchpadError::InvalidQuoteMint,
+    )]
+    quote_mint: Box<Account<'info, Mint>>,
+
+    #[account(
         init_if_needed,
         space = 8 + LastWithdraw::INIT_SPACE,
         seeds = [LastWithdraw::SEED_PREFIX],
@@ -46,12 +51,27 @@ pub struct Withdraw<'info> {
     bonding_curve_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
+        mut,
+        associated_token::mint = quote_mint,
+        associated_token::authority = bonding_curve,
+    )]
+    bonding_curve_quote_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(
         init_if_needed,
         payer = user,
         associated_token::mint = mint,
         associated_token::authority = user,
     )]
     user_token_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = user,
+        associated_token::mint = quote_mint,
+        associated_token::authority = user,
+    )]
+    user_quote_account: Box<Account<'info, TokenAccount>>,
 
     associated_token_program: Program<'info, AssociatedToken>,
 
@@ -76,44 +96,42 @@ pub fn withdraw(ctx: Context<Withdraw>) -> Result<()> {
         CurveLaunchpadError::InvalidWithdrawAuthority,
     );
 
-    //transfer tokens to withdraw authority from bonding curve
-    let cpi_accounts = Transfer {
-        from: ctx
-            .accounts
-            .bonding_curve_token_account
-            .to_account_info()
-            .clone(),
-        to: ctx.accounts.user_token_account.to_account_info().clone(),
-        authority: ctx.accounts.bonding_curve.to_account_info().clone(),
-    };
-
     let signer: [&[&[u8]]; 1] = [&[
         BondingCurve::SEED_PREFIX,
         ctx.accounts.mint.to_account_info().key.as_ref(),
         &[ctx.bumps.bonding_curve],
     ]];
 
+    // drain remaining MEME → withdraw authority
+    let meme_drain = Transfer {
+        from: ctx.accounts.bonding_curve_token_account.to_account_info(),
+        to: ctx.accounts.user_token_account.to_account_info(),
+        authority: ctx.accounts.bonding_curve.to_account_info(),
+    };
     token::transfer(
         CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
-            cpi_accounts,
+            meme_drain,
             &signer,
         ),
         ctx.accounts.bonding_curve_token_account.amount,
     )?;
 
-    //transer sol to withdraw authority from bonding curve
-    let from_account = &ctx.accounts.bonding_curve;
-    let to_account = &ctx.accounts.user;
+    // drain LST quote reserves → withdraw authority
+    let quote_drain = Transfer {
+        from: ctx.accounts.bonding_curve_quote_account.to_account_info(),
+        to: ctx.accounts.user_quote_account.to_account_info(),
+        authority: ctx.accounts.bonding_curve.to_account_info(),
+    };
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            quote_drain,
+            &signer,
+        ),
+        ctx.accounts.bonding_curve_quote_account.amount,
+    )?;
 
-    let min_balance = Rent::get()?.minimum_balance(8 + BondingCurve::INIT_SPACE as usize);
-
-    let total_bonding_curve_lamports = from_account.get_lamports() - min_balance;
-
-    **from_account.to_account_info().try_borrow_mut_lamports()? -= total_bonding_curve_lamports;
-    **to_account.try_borrow_mut_lamports()? += total_bonding_curve_lamports;
-
-    //update last withdraw
     let last_withdraw = &mut ctx.accounts.last_withdraw;
     last_withdraw.last_withdraw_timestamp = Clock::get()?.unix_timestamp;
 
