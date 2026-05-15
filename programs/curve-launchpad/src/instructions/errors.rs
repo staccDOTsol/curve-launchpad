@@ -31,4 +31,12 @@ pub enum CurveLaunchpadError {
     InvalidWithdrawAuthority,
     #[msg("Invalid Quote Mint")]
     InvalidQuoteMint,
+    #[msg("Attacker and target curves must be distinct")]
+    FlipSameCurve,
+    #[msg("Insufficient MEME to wager")]
+    FlipInsufficientWager,
+    #[msg("Switchboard randomness account is invalid or not yet revealable")]
+    FlipBadRandomness,
+    #[msg("Target curve has no LST reserves to steal")]
+    FlipTargetEmpty,
 }

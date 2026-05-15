@@ -18,4 +18,10 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 
 [dependencies]
 anchor-lang = {version="0.30.1", features = ["init-if-needed", "event-cpi"]}
-anchor-spl = { version = "0.30.1", features = ["metadata"] }
+anchor-spl = { version = "0.30.1", features = ["metadata", "token", "token_2022", "token_2022_extensions"] }
+spl-token-2022 = "3.0"
+switchboard-on-demand = { version = "0.3", default-features = false }
+# Pin borsh to 0.10 so anchor-lang's `>=0.9,<0.11` range resolves there
+# (otherwise switchboard's transitive deps can flip it to 0.9 and break
+# anchor-derive-serde's `deserialize_reader` codegen).
+borsh = "0.10"

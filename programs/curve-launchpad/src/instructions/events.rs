@@ -43,3 +43,15 @@ pub struct SetParamsEvent {
     pub fee_basis_points: u64,
     pub quote_mint: Pubkey,
 }
+
+#[event]
+pub struct FlipEvent {
+    pub attacker_mint: Pubkey,
+    pub target_mint: Pubkey,
+    pub user: Pubkey,
+    pub wager_meme: u64,
+    pub outcome_win: bool,
+    pub stolen_lst: u64,
+    pub treasury_cut: u64,
+    pub timestamp: i64,
+}
