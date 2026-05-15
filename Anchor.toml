@@ -9,7 +9,13 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-curve_launchpad = "Cpm3iVenngWyh3YQUXtjR1PudXBXfJJqLhxMGrDiVSkW"
+curve_launchpad = "GLstzf6zSDdU44K1GUCPKy9NyZx7qyUpb9L8qrXCrADo"
+
+[programs.devnet]
+curve_launchpad = "GLstzf6zSDdU44K1GUCPKy9NyZx7qyUpb9L8qrXCrADo"
+
+[programs.mainnet]
+curve_launchpad = "GLstzf6zSDdU44K1GUCPKy9NyZx7qyUpb9L8qrXCrADo"
 
 [registry]
 url = "https://api.apr.dev"
@@ -45,3 +51,13 @@ address = "DNXgeM9EiiaAbaWvwjHj9fQQLAX5ZsfHyvmYUNRAdNC8"
 
 [[test.validator.clone]]
 address = "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2"
+
+# stacSOL LST quote mint — cloned so callers that hit `Global.quote_mint`
+# while it still points at the on-chain constant (post-`initialize`, pre-
+# `set_params` override) have the mint account available. The TS suite
+# rotates `Global.quote_mint` to a local mock LST via `set_params` so the
+# rest of the tests can transact in tokens we control; this clone is just
+# a defence-in-depth so the constraint check in any pre-rotation ix path
+# doesn't trip a missing-account error against a fresh ledger.
+[[test.validator.clone]]
+address = "6K4xdfEk5rvySM496rxm4x8AgC9wVt7N4C7mFFpNAj5f"

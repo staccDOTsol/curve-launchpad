@@ -6,7 +6,7 @@ pub mod amm;
 pub mod instructions;
 pub mod state;
 
-declare_id!("Cpm3iVenngWyh3YQUXtjR1PudXBXfJJqLhxMGrDiVSkW");
+declare_id!("GLstzf6zSDdU44K1GUCPKy9NyZx7qyUpb9L8qrXCrADo");
 
 // Typed CPI bindings for Raydium CPMM, generated from the on-chain IDL at
 // `idls/raydium_cp_swap.json`. Used by `migrate` for pool init and (eventually)
