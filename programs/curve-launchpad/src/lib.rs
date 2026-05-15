@@ -60,4 +60,8 @@ pub mod curve_launchpad {
             quote_mint,
         )
     }
+
+    pub fn flip(ctx: Context<Flip>, wager_meme_amount: u64) -> Result<()> {
+        flip::flip(ctx, wager_meme_amount)
+    }
 }
