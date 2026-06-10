@@ -1,8 +1,12 @@
-use anchor_lang::{prelude::*, solana_program::system_instruction};
-use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount, Transfer};
+use anchor_lang::prelude::*;
+use anchor_spl::token_interface::{
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::{
-    amm, calculate_fee, state::{BondingCurve, Global}, CompleteEvent, CurveLaunchpadError, TradeEvent
+    amm, calculate_fee,
+    state::{BondingCurve, Global},
+    CompleteEvent, CurveLaunchpadError, TradeEvent,
 };
 
 #[event_cpi]
@@ -17,15 +21,17 @@ pub struct Buy<'info> {
     )]
     global: Box<Account<'info, Global>>,
 
-    /// CHECK: Using global state to validate fee_recipient account
-    #[account(mut)]
-    fee_recipient: AccountInfo<'info>,
+    mint: Box<InterfaceAccount<'info, Mint>>,
 
-    mint: Account<'info, Mint>,
+    quote_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
-        seeds = [BondingCurve::SEED_PREFIX, mint.to_account_info().key.as_ref()],
+        seeds = [
+            BondingCurve::SEED_PREFIX,
+            mint.key().as_ref(),
+            quote_mint.key().as_ref(),
+        ],
         bump,
     )]
     bonding_curve: Box<Account<'info, BondingCurve>>,
@@ -34,147 +40,205 @@ pub struct Buy<'info> {
         mut,
         associated_token::mint = mint,
         associated_token::authority = bonding_curve,
+        associated_token::token_program = token_program,
     )]
-    bonding_curve_token_account: Box<Account<'info, TokenAccount>>,
+    bonding_curve_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        associated_token::mint = quote_mint,
+        associated_token::authority = bonding_curve,
+        associated_token::token_program = quote_token_program,
+    )]
+    bonding_curve_quote_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
         associated_token::mint = mint,
         associated_token::authority = user,
+        associated_token::token_program = token_program,
     )]
-    user_token_account: Box<Account<'info, TokenAccount>>,
+    user_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        associated_token::mint = quote_mint,
+        associated_token::authority = user,
+        associated_token::token_program = quote_token_program,
+    )]
+    user_quote_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    /// Platform's half of the trade fee, paid in quote token.
+    #[account(
+        mut,
+        associated_token::mint = quote_mint,
+        associated_token::authority = global.fee_recipient,
+        associated_token::token_program = quote_token_program,
+    )]
+    fee_recipient_quote_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    /// Creator's half of the trade fee, paid in quote token.
+    #[account(
+        mut,
+        associated_token::mint = quote_mint,
+        associated_token::authority = bonding_curve.creator,
+        associated_token::token_program = quote_token_program,
+    )]
+    creator_quote_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     system_program: Program<'info, System>,
 
-    token_program: Program<'info, Token>,
+    token_program: Interface<'info, TokenInterface>,
+
+    quote_token_program: Interface<'info, TokenInterface>,
 }
 
-pub fn buy(ctx: Context<Buy>, token_amount: u64, max_sol_cost: u64) -> Result<()> {
+pub fn buy(ctx: Context<Buy>, token_amount: u64, max_quote_cost: u64) -> Result<()> {
     require!(
         ctx.accounts.global.initialized,
         CurveLaunchpadError::NotInitialized
     );
 
-    //invalid fee recipient
     require!(
-        ctx.accounts.fee_recipient.key == &ctx.accounts.global.fee_recipient,
-        CurveLaunchpadError::InvalidFeeRecipient,
+        !ctx.accounts.bonding_curve.complete,
+        CurveLaunchpadError::BondingCurveComplete,
     );
 
-    //bonding curve has enough tokens
     require!(
-        ctx.accounts.bonding_curve.real_token_reserves >= token_amount,
+        ctx.accounts.bonding_curve.real_token_reserves > 0,
         CurveLaunchpadError::InsufficientTokens,
     );
 
     require!(token_amount > 0, CurveLaunchpadError::MinBuy,);
 
-    let targe_token_amount = if ctx.accounts.bonding_curve_token_account.amount < token_amount {
-        ctx.accounts.bonding_curve_token_account.amount
-    } else {
-        token_amount
-    };
+    let target_token_amount = token_amount
+        .min(ctx.accounts.bonding_curve_token_account.amount)
+        .min(ctx.accounts.bonding_curve.real_token_reserves);
 
     let mut amm = amm::amm::AMM::new(
-        ctx.accounts.bonding_curve.virtual_sol_reserves as u128,
+        ctx.accounts.bonding_curve.virtual_quote_reserves as u128,
         ctx.accounts.bonding_curve.virtual_token_reserves as u128,
-        ctx.accounts.bonding_curve.real_sol_reserves as u128,
+        ctx.accounts.bonding_curve.real_quote_reserves as u128,
         ctx.accounts.bonding_curve.real_token_reserves as u128,
         ctx.accounts.global.initial_virtual_token_reserves as u128,
     );
 
-    let buy_result = amm.apply_buy(targe_token_amount as u128).unwrap();
+    let buy_result = amm
+        .apply_buy(target_token_amount as u128)
+        .ok_or(CurveLaunchpadError::InvalidCurveParams)?;
     let fee = calculate_fee(buy_result.sol_amount, ctx.accounts.global.fee_basis_points);
+    // 50/50 split between platform and creator.
+    let platform_fee = fee / 2;
+    let creator_fee = fee - platform_fee;
     let buy_amount_with_fee = buy_result.sol_amount + fee;
 
-    //check if the amount of SOL to transfe plus fee is less than the max_sol_cost
     require!(
-        buy_amount_with_fee <= max_sol_cost,
-        CurveLaunchpadError::MaxSOLCostExceeded,
+        buy_amount_with_fee <= max_quote_cost,
+        CurveLaunchpadError::MaxQuoteCostExceeded,
     );
 
-    //check if the user has enough SOL
     require!(
-        ctx.accounts.user.lamports() >= buy_amount_with_fee,
-        CurveLaunchpadError::InsufficientSOL,
+        ctx.accounts.user_quote_token_account.amount >= buy_amount_with_fee,
+        CurveLaunchpadError::InsufficientQuote,
     );
-    
-    // transfer SOL to bonding curve
-    let from_account = &ctx.accounts.user;
-    let to_bonding_curve_account = &ctx.accounts.bonding_curve;
 
-    let transfer_instruction = system_instruction::transfer(
-        from_account.key,
-        to_bonding_curve_account.to_account_info().key,
+    let quote_decimals = ctx.accounts.quote_mint.decimals;
+
+    // quote into the curve vault
+    transfer_checked(
+        CpiContext::new(
+            ctx.accounts.quote_token_program.to_account_info(),
+            TransferChecked {
+                from: ctx.accounts.user_quote_token_account.to_account_info(),
+                mint: ctx.accounts.quote_mint.to_account_info(),
+                to: ctx
+                    .accounts
+                    .bonding_curve_quote_token_account
+                    .to_account_info(),
+                authority: ctx.accounts.user.to_account_info(),
+            },
+        ),
         buy_result.sol_amount,
-    );
-
-    anchor_lang::solana_program::program::invoke_signed(
-        &transfer_instruction,
-        &[
-            from_account.to_account_info(),
-            to_bonding_curve_account.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-        ],
-        &[],
+        quote_decimals,
     )?;
 
-    //transfer SOL to fee recipient
-    let to_fee_recipient_account = &ctx.accounts.fee_recipient;
+    if platform_fee > 0 {
+        transfer_checked(
+            CpiContext::new(
+                ctx.accounts.quote_token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.user_quote_token_account.to_account_info(),
+                    mint: ctx.accounts.quote_mint.to_account_info(),
+                    to: ctx
+                        .accounts
+                        .fee_recipient_quote_token_account
+                        .to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            platform_fee,
+            quote_decimals,
+        )?;
+    }
 
-    let transfer_instruction = system_instruction::transfer(
-        from_account.key,
-        to_fee_recipient_account.key,
-        fee,
-    );
+    if creator_fee > 0 {
+        transfer_checked(
+            CpiContext::new(
+                ctx.accounts.quote_token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.user_quote_token_account.to_account_info(),
+                    mint: ctx.accounts.quote_mint.to_account_info(),
+                    to: ctx.accounts.creator_quote_token_account.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            creator_fee,
+            quote_decimals,
+        )?;
+    }
 
-    anchor_lang::solana_program::program::invoke_signed(
-        &transfer_instruction,
-        &[
-            from_account.to_account_info(),
-            to_fee_recipient_account.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-        ],
-        &[],
-    )?;
-
+    // tokens out of curve inventory to the user
+    let mint_key = ctx.accounts.mint.key();
+    let quote_mint_key = ctx.accounts.quote_mint.key();
     let signer: [&[&[u8]]; 1] = [&[
         BondingCurve::SEED_PREFIX,
-        ctx.accounts.mint.to_account_info().key.as_ref(),
+        mint_key.as_ref(),
+        quote_mint_key.as_ref(),
         &[ctx.bumps.bonding_curve],
     ]];
 
-
-    token::mint_to(
+    transfer_checked(
         CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
-            MintTo {
-                mint: ctx.accounts.mint.to_account_info().clone(),
-                to: ctx.accounts.user_token_account.to_account_info().clone(),
-                authority: ctx.accounts.bonding_curve.to_account_info().clone(),
+            TransferChecked {
+                from: ctx.accounts.bonding_curve_token_account.to_account_info(),
+                mint: ctx.accounts.mint.to_account_info(),
+                to: ctx.accounts.user_token_account.to_account_info(),
+                authority: ctx.accounts.bonding_curve.to_account_info(),
             },
             &signer,
         ),
         buy_result.token_amount,
+        ctx.accounts.mint.decimals,
     )?;
 
-    //apply the buy to the bonding curve
     let bonding_curve = &mut ctx.accounts.bonding_curve;
     bonding_curve.real_token_reserves = amm.real_token_reserves as u64;
-    bonding_curve.real_sol_reserves = amm.real_sol_reserves as u64;
+    bonding_curve.real_quote_reserves = amm.real_sol_reserves as u64;
     bonding_curve.virtual_token_reserves = amm.virtual_token_reserves as u64;
-    bonding_curve.virtual_sol_reserves = amm.virtual_sol_reserves as u64;
+    bonding_curve.virtual_quote_reserves = amm.virtual_sol_reserves as u64;
 
     emit_cpi!(TradeEvent {
-        mint: *ctx.accounts.mint.to_account_info().key,
-        sol_amount: buy_result.sol_amount,
+        mint: ctx.accounts.mint.key(),
+        quote_mint: ctx.accounts.quote_mint.key(),
+        quote_amount: buy_result.sol_amount,
         token_amount: buy_result.token_amount,
         is_buy: true,
-        user: *ctx.accounts.user.to_account_info().key,
+        user: ctx.accounts.user.key(),
         timestamp: Clock::get()?.unix_timestamp,
-        virtual_sol_reserves: bonding_curve.virtual_sol_reserves,
+        virtual_quote_reserves: bonding_curve.virtual_quote_reserves,
         virtual_token_reserves: bonding_curve.virtual_token_reserves,
-        real_sol_reserves: bonding_curve.real_sol_reserves,
+        real_quote_reserves: bonding_curve.real_quote_reserves,
         real_token_reserves: bonding_curve.real_token_reserves,
     });
 
@@ -182,15 +246,13 @@ pub fn buy(ctx: Context<Buy>, token_amount: u64, max_sol_cost: u64) -> Result<()
         bonding_curve.complete = true;
 
         emit_cpi!(CompleteEvent {
-            user: *ctx.accounts.user.to_account_info().key,
-            mint: *ctx.accounts.mint.to_account_info().key,
-            bonding_curve: *ctx.accounts.bonding_curve.to_account_info().key,
+            user: ctx.accounts.user.key(),
+            mint: ctx.accounts.mint.key(),
+            quote_mint: ctx.accounts.quote_mint.key(),
+            bonding_curve: bonding_curve.key(),
             timestamp: Clock::get()?.unix_timestamp,
         });
     }
 
-    msg!("bonding_curve: {:?}", amm);
-
     Ok(())
 }
-

@@ -2,25 +2,26 @@ use anchor_lang::prelude::*;
 
 #[event]
 pub struct CreateEvent {
-    pub name: String,
-    pub symbol: String,
-    pub uri: String,
     pub mint: Pubkey,
+    pub quote_mint: Pubkey,
     pub bonding_curve: Pubkey,
     pub creator: Pubkey,
+    pub virtual_quote_reserves: u64,
+    pub target_market_cap: u64,
 }
 
 #[event]
 pub struct TradeEvent {
     pub mint: Pubkey,
-    pub sol_amount: u64,
+    pub quote_mint: Pubkey,
+    pub quote_amount: u64,
     pub token_amount: u64,
     pub is_buy: bool,
     pub user: Pubkey,
     pub timestamp: i64,
-    pub virtual_sol_reserves: u64,
+    pub virtual_quote_reserves: u64,
     pub virtual_token_reserves: u64,
-    pub real_sol_reserves: u64,
+    pub real_quote_reserves: u64,
     pub real_token_reserves: u64,
 }
 
@@ -28,6 +29,7 @@ pub struct TradeEvent {
 pub struct CompleteEvent {
     pub user: Pubkey,
     pub mint: Pubkey,
+    pub quote_mint: Pubkey,
     pub bonding_curve: Pubkey,
     pub timestamp: i64,
 }

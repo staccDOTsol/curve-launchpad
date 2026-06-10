@@ -1,6 +1,5 @@
 use anchor_lang::error_code;
 
-
 #[error_code]
 pub enum CurveLaunchpadError {
     #[msg("Global Already Initialized")]
@@ -15,12 +14,12 @@ pub enum CurveLaunchpadError {
     BondingCurveNotComplete,
     #[msg("Insufficient Tokens")]
     InsufficientTokens,
-    #[msg("Insufficient SOL")]
-    InsufficientSOL,
-    #[msg("Max SOL Cost Exceeded")]
-    MaxSOLCostExceeded,
-    #[msg("Min SOL Output Exceeded")]
-    MinSOLOutputExceeded,
+    #[msg("Insufficient quote token balance")]
+    InsufficientQuote,
+    #[msg("Max quote cost exceeded")]
+    MaxQuoteCostExceeded,
+    #[msg("Min quote output not reached")]
+    MinQuoteOutputNotReached,
     #[msg("Min buy is 1 Token")]
     MinBuy,
     #[msg("Min sell is 1 Token")]
@@ -29,4 +28,8 @@ pub enum CurveLaunchpadError {
     InvalidFeeRecipient,
     #[msg("Invalid Withdraw Authority")]
     InvalidWithdrawAuthority,
+    #[msg("Quote mint cannot equal the launched mint")]
+    InvalidQuoteMint,
+    #[msg("Invalid curve parameters")]
+    InvalidCurveParams,
 }

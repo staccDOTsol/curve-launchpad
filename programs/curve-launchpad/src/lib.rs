@@ -2,12 +2,12 @@ use anchor_lang::prelude::*;
 
 use instructions::*;
 
+pub mod amm;
 pub mod instructions;
 pub mod state;
-pub mod amm;
 
 declare_id!("G2LGhLggpxLknXSkEhWqmukeS1m6NJXYqhaDHrV6JejZ");
-declare_program!(dynamic_amm);
+
 #[program]
 pub mod curve_launchpad {
 
@@ -17,16 +17,23 @@ pub mod curve_launchpad {
         initialize::initialize(ctx)
     }
 
-    pub fn create(ctx: Context<Create>, name: String, symbol: String, uri: String) -> Result<()> {
-        create::create(ctx, name, symbol, uri)
+    /// Creates a bonding curve for an existing mint against `quote_mint`.
+    /// `virtual_quote_reserves` is derived client-side from the curve's
+    /// target market cap; `target_market_cap` is stored for display.
+    pub fn create(
+        ctx: Context<Create>,
+        virtual_quote_reserves: u64,
+        target_market_cap: u64,
+    ) -> Result<()> {
+        create::create(ctx, virtual_quote_reserves, target_market_cap)
     }
 
-    pub fn buy(ctx: Context<Buy>, token_amount: u64, max_sol_cost: u64) -> Result<()> {
-        buy::buy(ctx, token_amount, max_sol_cost)
+    pub fn buy(ctx: Context<Buy>, token_amount: u64, max_quote_cost: u64) -> Result<()> {
+        buy::buy(ctx, token_amount, max_quote_cost)
     }
 
-    pub fn sell(ctx: Context<Sell>, token_amount: u64, min_sol_output: u64) -> Result<()> {
-        sell::sell(ctx, token_amount, min_sol_output)
+    pub fn sell(ctx: Context<Sell>, token_amount: u64, min_quote_output: u64) -> Result<()> {
+        sell::sell(ctx, token_amount, min_quote_output)
     }
 
     pub fn withdraw(ctx: Context<Withdraw>) -> Result<()> {

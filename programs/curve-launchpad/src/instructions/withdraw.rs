@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
-    token::{self, Mint, Token, TokenAccount, Transfer},
+    token_interface::{transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked},
 };
 
 use crate::{
@@ -20,7 +20,9 @@ pub struct Withdraw<'info> {
     )]
     global: Box<Account<'info, Global>>,
 
-    mint: Account<'info, Mint>,
+    mint: Box<InterfaceAccount<'info, Mint>>,
+
+    quote_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         init_if_needed,
@@ -33,7 +35,11 @@ pub struct Withdraw<'info> {
 
     #[account(
         mut,
-        seeds = [BondingCurve::SEED_PREFIX, mint.to_account_info().key.as_ref()],
+        seeds = [
+            BondingCurve::SEED_PREFIX,
+            mint.key().as_ref(),
+            quote_mint.key().as_ref(),
+        ],
         bump,
     )]
     bonding_curve: Box<Account<'info, BondingCurve>>,
@@ -42,22 +48,43 @@ pub struct Withdraw<'info> {
         mut,
         associated_token::mint = mint,
         associated_token::authority = bonding_curve,
+        associated_token::token_program = token_program,
     )]
-    bonding_curve_token_account: Box<Account<'info, TokenAccount>>,
+    bonding_curve_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        associated_token::mint = quote_mint,
+        associated_token::authority = bonding_curve,
+        associated_token::token_program = quote_token_program,
+    )]
+    bonding_curve_quote_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         init_if_needed,
         payer = user,
         associated_token::mint = mint,
         associated_token::authority = user,
+        associated_token::token_program = token_program,
     )]
-    user_token_account: Box<Account<'info, TokenAccount>>,
+    user_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = user,
+        associated_token::mint = quote_mint,
+        associated_token::authority = user,
+        associated_token::token_program = quote_token_program,
+    )]
+    user_quote_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     associated_token_program: Program<'info, AssociatedToken>,
 
     system_program: Program<'info, System>,
 
-    token_program: Program<'info, Token>,
+    token_program: Interface<'info, TokenInterface>,
+
+    quote_token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn withdraw(ctx: Context<Withdraw>) -> Result<()> {
@@ -67,7 +94,7 @@ pub fn withdraw(ctx: Context<Withdraw>) -> Result<()> {
     );
 
     require!(
-        ctx.accounts.bonding_curve.complete == true,
+        ctx.accounts.bonding_curve.complete,
         CurveLaunchpadError::BondingCurveNotComplete,
     );
 
@@ -76,44 +103,50 @@ pub fn withdraw(ctx: Context<Withdraw>) -> Result<()> {
         CurveLaunchpadError::InvalidWithdrawAuthority,
     );
 
-    //transfer tokens to withdraw authority from bonding curve
-    let cpi_accounts = Transfer {
-        from: ctx
-            .accounts
-            .bonding_curve_token_account
-            .to_account_info()
-            .clone(),
-        to: ctx.accounts.user_token_account.to_account_info().clone(),
-        authority: ctx.accounts.bonding_curve.to_account_info().clone(),
-    };
-
+    let mint_key = ctx.accounts.mint.key();
+    let quote_mint_key = ctx.accounts.quote_mint.key();
     let signer: [&[&[u8]]; 1] = [&[
         BondingCurve::SEED_PREFIX,
-        ctx.accounts.mint.to_account_info().key.as_ref(),
+        mint_key.as_ref(),
+        quote_mint_key.as_ref(),
         &[ctx.bumps.bonding_curve],
     ]];
 
-    token::transfer(
+    // remaining token inventory to the withdraw authority
+    transfer_checked(
         CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
-            cpi_accounts,
+            TransferChecked {
+                from: ctx.accounts.bonding_curve_token_account.to_account_info(),
+                mint: ctx.accounts.mint.to_account_info(),
+                to: ctx.accounts.user_token_account.to_account_info(),
+                authority: ctx.accounts.bonding_curve.to_account_info(),
+            },
             &signer,
         ),
         ctx.accounts.bonding_curve_token_account.amount,
+        ctx.accounts.mint.decimals,
     )?;
 
-    //transer sol to withdraw authority from bonding curve
-    let from_account = &ctx.accounts.bonding_curve;
-    let to_account = &ctx.accounts.user;
+    // raised quote to the withdraw authority
+    transfer_checked(
+        CpiContext::new_with_signer(
+            ctx.accounts.quote_token_program.to_account_info(),
+            TransferChecked {
+                from: ctx
+                    .accounts
+                    .bonding_curve_quote_token_account
+                    .to_account_info(),
+                mint: ctx.accounts.quote_mint.to_account_info(),
+                to: ctx.accounts.user_quote_token_account.to_account_info(),
+                authority: ctx.accounts.bonding_curve.to_account_info(),
+            },
+            &signer,
+        ),
+        ctx.accounts.bonding_curve_quote_token_account.amount,
+        ctx.accounts.quote_mint.decimals,
+    )?;
 
-    let min_balance = Rent::get()?.minimum_balance(8 + BondingCurve::INIT_SPACE as usize);
-
-    let total_bonding_curve_lamports = from_account.get_lamports() - min_balance;
-
-    **from_account.to_account_info().try_borrow_mut_lamports()? -= total_bonding_curve_lamports;
-    **to_account.try_borrow_mut_lamports()? += total_bonding_curve_lamports;
-
-    //update last withdraw
     let last_withdraw = &mut ctx.accounts.last_withdraw;
     last_withdraw.last_withdraw_timestamp = Clock::get()?.unix_timestamp;
 
